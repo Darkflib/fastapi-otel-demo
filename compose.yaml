@@ -1,0 +1,68 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      OTEL_SERVICE_NAME: fastapi-demo
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      OTEL_METRIC_EXPORT_INTERVAL: "5000"
+    depends_on:
+      - collector
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "8889:8889"   # prometheus-format metrics
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:latest
+    command: ["--config.file=/etc/prometheus/prometheus.yaml"]
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - collector
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fastapi.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    ports:
+      - "16686:16686" # UI
+
+  # Sends a mix of good / 404 / 422 / 500 requests so there's something to look at
+  traffic:
+    image: curlimages/curl:latest
+    depends_on:
+      - app
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep 5
+        while true; do
+          curl -s -o /dev/null http://app:8000/items/$$((RANDOM % 3 + 1))
+          curl -s -o /dev/null http://app:8000/items/99
+          curl -s -o /dev/null http://app:8000/items/abc
+          [ $$((RANDOM % 5)) -eq 0 ] && curl -s -o /dev/null http://app:8000/boom
+          curl -s -o /dev/null http://app:8000/health
+          sleep 1
+        done
